@@ -36,13 +36,14 @@ const meshVert = `#version 300 es
 precision highp float;
 layout(location=0) in vec2 aUV;
 ${sourceFunctions}
-uniform float uSourceAspect,uHeight,uSmooth,uTilt,uTurn,uPanY,uPanX,uRenderMode;
+uniform float uSourceAspect,uHeight,uSmooth,uTilt,uTurn,uPanY,uPanX,uRenderMode,uDisplacement,uSmoothness;
 uniform mat4 uView,uProjection;
 out vec2 vUV; out float vHeight;
 void main() {
   vec2 px = vec2(uSmooth) / uSourceSize;
   float h = heightAt(aUV) * .4 + (heightAt(aUV + vec2(px.x, 0)) + heightAt(aUV - vec2(px.x, 0)) + heightAt(aUV + vec2(0, px.y)) + heightAt(aUV - vec2(0, px.y))) * .15;
-  vec3 p = vec3((aUV.x - .5) * uSourceAspect, aUV.y - .5, (h - .16) * uHeight);
+  h = h * uSmoothness + .16 * (1. - uSmoothness);
+  vec3 p = vec3((aUV.x - .5) * uSourceAspect, aUV.y - .5, (h - .16) * uHeight * uDisplacement);
   float c = cos(uTilt), s = sin(uTilt);
   p.yz = mat2(c, -s, s, c) * p.yz;
   c = cos(uTurn); s = sin(uTurn);
@@ -56,7 +57,7 @@ const meshFrag = `#version 300 es
 precision highp float;
 ${sourceFunctions}
 in vec2 vUV; in float vHeight;
-uniform float uLines,uThickness,uBrightness,uSourceColour,uBlackPoint,uRenderMode;
+uniform float uLines,uThickness,uBrightness,uSourceColour,uBlackPoint,uRenderMode,uPosterize;
 uniform vec3 uColour; uniform bool uXray;
 out vec4 outColour;
 void main() {
@@ -67,6 +68,10 @@ void main() {
   float power = (.045 + .955 * luminance) * uBrightness;
   vec3 source = sourceAt(vUV).rgb;
   vec3 col = mix(uColour * power, source * uBrightness, uSourceColour);
+  if (uPosterize > 0.) {
+    float levels = 2. + uPosterize * 62.;
+    col = floor(col * levels) / levels;
+  }
   if (uRenderMode > 0.5) { mask = 1.; }
   if (uXray) { if (mask < .005) discard; outColour = vec4(col, mask); }
   else { outColour = vec4(col * mask, 1.); }
@@ -83,7 +88,7 @@ const warpFrag = `#version 300 es
 precision highp float;
 in vec2 vUV; out vec4 outColour;
 uniform sampler2D uImage;
-uniform float uTime,uWarp,uJitter,uTears,uChromatic,uGlitch,uColorDrift,uDither,uSlitScan;
+uniform float uTime,uWarp,uJitter,uTears,uChromatic,uGlitch,uColorDrift,uDither,uSlitScan,uPosterize;
 uniform vec2 uSize;
 float hash(float n) { return fract(sin(n * 127.1 + 71.7) * 43758.5453); }
 float hash2(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
@@ -103,6 +108,10 @@ void main() {
   vec3 col = vec3(texture(uImage, uv + vec2(split + rd, 0)).r, texture(uImage, uv + vec2(gd, 0)).g, texture(uImage, uv - vec2(split + bd, 0)).b);
   if (uDither > 0.) {
     float levels = 2.0 + uDither * 254.0;
+    col = floor(col * levels) / levels;
+  }
+  if (uPosterize > 0.) {
+    float levels = 2. + uPosterize * 62.;
     col = floor(col * levels) / levels;
   }
   outColour = vec4(col, 1.);
@@ -383,7 +392,7 @@ export class SignalRenderer {
     if (p.xray) { g.disable(g.DEPTH_TEST); g.enable(g.BLEND); g.blendFunc(g.SRC_ALPHA, g.ONE); }
     else { g.enable(g.DEPTH_TEST); g.depthFunc(g.LEQUAL); g.disable(g.BLEND); }
     const renderMode = p.renderMode || 0;
-    this.use(this.meshProgram, { ...common, uView: view, uProjection: projection, uSourceAspect: this.sourceAspect, uHeight: p.height * (1 + music * p.bassAmount * bass ** 1.4), uSmooth: p.smooth, uTilt: rad(p.tilt), uTurn: rad(p.turn), uPanY: p.panY, uPanX: 0, uLines: p.lines, uThickness: p.thickness, uBrightness: p.brightness * (1 + music * .25 * level ** 1.5), uSourceColour: p.sourceColour, uBlackPoint: p.blackPoint, uColour: p.colour, uXray: p.xray, uRenderMode: renderMode });
+    this.use(this.meshProgram, { ...common, uView: view, uProjection: projection, uSourceAspect: this.sourceAspect, uHeight: p.height * (1 + music * p.bassAmount * bass ** 1.4), uSmooth: p.smooth, uTilt: rad(p.tilt), uTurn: rad(p.turn), uPanY: p.panY, uPanX: 0, uLines: p.lines, uThickness: p.thickness, uBrightness: p.brightness * (1 + music * .25 * level ** 1.5), uSourceColour: p.sourceColour, uBlackPoint: p.blackPoint, uColour: p.colour, uXray: p.xray, uRenderMode: renderMode, uDisplacement: p.displacement, uSmoothness: p.smoothness });
     this.bind(this.meshProgram, 'uSource', this.sourceTex, 0);
     g.bindVertexArray(this.meshVAO);
     const drawMode = renderMode === 2 ? g.POINTS : g.TRIANGLES;
@@ -391,7 +400,7 @@ export class SignalRenderer {
     g.disable(g.DEPTH_TEST);
     g.disable(g.BLEND);
     this.pass(this.targets[1]);
-    this.use(this.warpProgram, { uTime: time * p.signalSpeed, uWarp: Math.min(1, p.warp + music * .065 * (.65 * hi ** 1.35 + .35 * pulse)), uJitter: .035 + music * .01625 * hi, uTears: .025 + music * .0195 * pulse, uChromatic: p.chromatic * (1 + music * 0.9 * bass), uGlitch: music * 0.9 * (pulse + bass), uColorDrift: p.colorDrift * (1 + music * 0.5 * level), uDither: p.dither, uSlitScan: p.slitScan, uSize: [this.w, this.h] });
+    this.use(this.warpProgram, { uTime: time * p.signalSpeed, uWarp: Math.min(1, p.warp + music * .065 * (.65 * hi ** 1.35 + .35 * pulse)), uJitter: .035 + music * .01625 * hi, uTears: .025 + music * .0195 * pulse, uChromatic: p.chromatic * (1 + music * 0.9 * bass), uGlitch: music * 0.9 * (pulse + bass), uColorDrift: p.colorDrift * (1 + music * 0.5 * level), uDither: p.dither, uSlitScan: p.slitScan, uPosterize: p.posterize, uSize: [this.w, this.h] });
     this.bind(this.warpProgram, 'uImage', this.targets[0].tex, 0);
     this.quad();
     // feedback: blend current warp output into previous feedback frame
