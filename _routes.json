@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "include": ["/*"],
+  "exclude": ["/assets/*", "/__webpack_hmr"],
+  "fallback": "/index.html"
+}

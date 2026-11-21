@@ -76,67 +76,6 @@ void main() {
   if (uXray) { if (mask < .005) discard; outColour = vec4(col, mask); }
   else { outColour = vec4(col * mask, 1.); }
 }`;
-const particleVert = `#version 300 es
-precision highp float;
-layout(location=0) in vec2 aUV;
-${sourceFunctions}
-uniform float uSourceAspect,uHeight,uSmooth,uTilt,uTurn,uPanY,uPanX,uDisplacement,uSmoothness,uDotSize,uDepthSpread,uDriftSpin,uMouseX,uMouseY,uTime,uDotSoftness,uDarkThreshold,uFilter;
-uniform mat4 uView,uProjection;
-out vec2 vUV; out float vHeight; out float vLum;
-void main() {
-  vec2 px = vec2(uSmooth) / uSourceSize;
-  float h = heightAt(aUV) * .4 + (heightAt(aUV + vec2(px.x, 0)) + heightAt(aUV - vec2(px.x, 0)) + heightAt(aUV + vec2(0, px.y)) + heightAt(aUV - vec2(0, px.y))) * .15;
-  h = h * uSmoothness + .16 * (1. - uSmoothness);
-  
-  // Drift spin - rotate UVs over time
-  float spin = uDriftSpin * uTime * 2.0;
-  float cs = cos(spin), sn = sin(spin);
-  vec2 rotatedUV = mat2(cs, -sn, sn, cs) * (aUV - .5) + .5;
-  
-  vec3 p = vec3((rotatedUV.x - .5) * uSourceAspect, rotatedUV.y - .5, (h - .16) * uHeight * uDisplacement);
-  float c = cos(uTilt), s = sin(uTilt);
-  p.yz = mat2(c, -s, s, c) * p.yz;
-  c = cos(uTurn); s = sin(uTurn);
-  p.xz = mat2(c, -s, s, c) * p.xz;
-  p.xy += vec2(uPanX, uPanY);
-  
-  // Depth spread - Z variation based on luminance
-  p.z += (h - .5) * uDepthSpread * 2.0;
-  
-  // Mouse interaction - offset toward mouse
-  vec2 mouseOffset = vec2(uMouseX - .5, uMouseY - .5) * uDepthSpread * 0.8;
-  p.xy += mouseOffset;
-  
-  gl_Position = uProjection * uView * vec4(p, 1.);
-  vUV = rotatedUV; vHeight = h; vLum = h;
-}`;
-const particleFrag = `#version 300 es
-precision highp float;
-in vec2 vUV; in float vHeight; out vec4 outColour;
-uniform float uDotSize,uDotSoftness,uDarkThreshold,uBrightness,uFilter,uColorMode,uDuotoneMix;
-uniform vec3 uDuotoneColor1,uDuotoneColor2,uColour;
-void main() {
-  // Soft circular point
-  float dist = length(gl_PointCoord - .5);
-  float softEdge = smoothstep(.5, .5 - uDotSoftness * .4, dist);
-  if (softEdge < .01) discard;
-  
-  float luminance = clamp((vHeight - .3) * 1.6, 0., 1.);
-  if (luminance < uDarkThreshold) discard;
-  
-  // Filter - temporal/spatial smoothing
-  float alpha = softEdge * luminance * uFilter;
-  
-  // Duotone coloring
-  vec3 col;
-  if (uColorMode > .5) {
-    col = mix(uDuotoneColor1, uDuotoneColor2, luminance);
-  } else {
-    col = uColour;
-  }
-  
-  outColour = vec4(col * luminance * uBrightness * .8, alpha * softEdge);
-}`;
 const fullVert = `#version 300 es
 precision highp float;
 out vec2 vUV;
@@ -261,7 +200,6 @@ export class SignalRenderer {
     this.blurProgram = this.program(fullVert, blurFrag);
     this.finishProgram = this.program(fullVert, finishFrag);
     this.copyProgram = this.program(fullVert, copyFrag);
-    this.particleProgram = this.program(particleVert, particleFrag);
     this.emptyVAO = g.createVertexArray();
     this.meshVAO = g.createVertexArray();
     this.vertexBuffer = g.createBuffer();
@@ -471,19 +409,12 @@ export class SignalRenderer {
     g.clear(g.COLOR_BUFFER_BIT | g.DEPTH_BUFFER_BIT);
     g.disable(g.CULL_FACE);
     const renderMode = p.renderMode || 0;
-    const isParticles = renderMode === 3;
-    if (isParticles) { g.disable(g.DEPTH_TEST); g.enable(g.BLEND); g.blendFunc(g.SRC_ALPHA, g.ONE); }
-    else if (p.xray) { g.disable(g.DEPTH_TEST); g.enable(g.BLEND); g.blendFunc(g.SRC_ALPHA, g.ONE); }
+    if (p.xray) { g.disable(g.DEPTH_TEST); g.enable(g.BLEND); g.blendFunc(g.SRC_ALPHA, g.ONE); }
     else { g.enable(g.DEPTH_TEST); g.depthFunc(g.LEQUAL); g.disable(g.BLEND); }
-    if (isParticles) {
-      this.use(this.particleProgram, { ...common, uView: view, uProjection: projection, uSourceAspect: this.sourceAspect, uHeight: p.height * (1 + music * p.bassAmount * bass ** 1.4), uSmooth: p.smooth, uTilt: rad(p.tilt), uTurn: rad(p.turn), uPanY: p.panY, uPanX: 0, uDisplacement: p.displacement, uSmoothness: p.smoothness, uDotSize: p.dotSize, uDepthSpread: p.depthSpread, uDriftSpin: p.driftSpin, uMouseX: p.mouseX, uMouseY: p.mouseY, uTime: time * p.signalSpeed, uDotSoftness: p.dotSoftness, uDarkThreshold: p.darkThreshold, uFilter: p.filter, uColorMode: p.colorMode, uDuotoneMix: p.duotoneMix, uDuotoneColor1: p.duotoneColor1, uDuotoneColor2: p.duotoneColor2, uColour: p.colour, uBrightness: p.brightness * (1 + music * .25 * level ** 1.5) });
-      this.bind(this.particleProgram, 'uSource', this.sourceTex, 0);
-    } else {
-      this.use(this.meshProgram, { ...common, uView: view, uProjection: projection, uSourceAspect: this.sourceAspect, uHeight: p.height * (1 + music * p.bassAmount * bass ** 1.4), uSmooth: p.smooth, uTilt: rad(p.tilt), uTurn: rad(p.turn), uPanY: p.panY, uPanX: 0, uLines: p.lines, uThickness: p.thickness, uBrightness: p.brightness * (1 + music * .25 * level ** 1.5), uSourceColour: p.sourceColour, uBlackPoint: p.blackPoint, uColour: p.colour, uXray: p.xray, uRenderMode: renderMode, uDisplacement: p.displacement, uSmoothness: p.smoothness });
-      this.bind(this.meshProgram, 'uSource', this.sourceTex, 0);
-    }
+    this.use(this.meshProgram, { ...common, uView: view, uProjection: projection, uSourceAspect: this.sourceAspect, uHeight: p.height * (1 + music * p.bassAmount * bass ** 1.4), uSmooth: p.smooth, uTilt: rad(p.tilt), uTurn: rad(p.turn), uPanY: p.panY, uPanX: 0, uLines: p.lines, uThickness: p.thickness, uBrightness: p.brightness * (1 + music * .25 * level ** 1.5), uSourceColour: p.sourceColour, uBlackPoint: p.blackPoint, uColour: p.colour, uXray: p.xray, uRenderMode: renderMode, uDisplacement: p.displacement, uSmoothness: p.smoothness });
+    this.bind(this.meshProgram, 'uSource', this.sourceTex, 0);
     g.bindVertexArray(this.meshVAO);
-    const drawMode = isParticles ? g.POINTS : (renderMode >= 2 ? g.POINTS : g.TRIANGLES);
+    const drawMode = renderMode >= 2 ? g.POINTS : g.TRIANGLES;
     g.drawElements(drawMode, this.indexCount, g.UNSIGNED_INT, 0);
     g.disable(g.DEPTH_TEST);
     g.disable(g.BLEND);
